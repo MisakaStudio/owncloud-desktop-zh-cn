@@ -1,0 +1,21 @@
+# 构建/发布产物
+dist/
+*.exe
+*.msi
+*.msp
+*.dll
+*.pdb
+*.log
+*.tmp
+
+# IDE
+.vs/
+.vscode/
+*.user
+
+# Python
+__pycache__/
+*.pyc
+
+# generated MUI (optional Windows cloud-menu tool; generated locally, never committed)
+*.mui

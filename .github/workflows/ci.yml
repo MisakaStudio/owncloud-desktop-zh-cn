@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate-and-build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate translations (.ts)
+        shell: pwsh
+        run: python tools/validate-translations.py
+
+      - name: Check for accidental personal information
+        shell: pwsh
+        run: python tools/check-privacy.py
+
+      - name: Build Chinese installer
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File tools/setup/build.ps1
+
+      - name: Installer self test
+        shell: pwsh
+        run: |
+          $exe = Join-Path 'dist' 'ownCloud-7.1.1-简体中文安装程序.exe'
+          if (-not (Test-Path $exe)) { throw 'installer not built' }
+          $p = Start-Process -FilePath $exe -ArgumentList '--selftest' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "selftest failed (exit $($p.ExitCode))" }
+          Write-Host 'selftest OK'
+
+      - name: Embedded qm must match committed qm
+        shell: pwsh
+        run: |
+          $exe = Join-Path 'dist' 'ownCloud-7.1.1-简体中文安装程序.exe'
+          $out = Join-Path $env:RUNNER_TEMP 'qm-out'
+          $p = Start-Process -FilePath $exe -ArgumentList @('--extract-qm', $out) -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'extract-qm failed' }
+          $a = (Get-FileHash 'translations\client_zh_CN.qm' -Algorithm SHA256).Hash.ToLower()
+          $b = (Get-FileHash (Join-Path $out 'client_zh_CN.qm') -Algorithm SHA256).Hash.ToLower()
+          if ($a -ne $b) { throw "embedded qm ($b) differs from committed qm ($a)" }
+          Write-Host "qm sha256: $a"
+
+      - name: PowerShell scripts syntax check
+        shell: pwsh
+        run: |
+          $scripts = @('tools\patch-dll.ps1', 'tools\rebuild-qm.ps1', 'tools\windows\cloud-menu-zh.ps1')
+          foreach ($s in $scripts) {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $s).Path, [ref]$null, [ref]$errs) | Out-Null
+            if ($errs.Count -gt 0) { $errs | ForEach-Object { Write-Host $_ }; throw "$s has syntax errors" }
+            Write-Host "$s syntax OK"
+          }
+
+      - name: Windows cloud-menu tool smoke test (if component present)
+        shell: pwsh
+        run: |
+          $en = Join-Path $env:WINDIR 'System32\en-US\Windows.FileExplorer.Common.dll.mui'
+          if (-not (Test-Path $en)) { Write-Host 'en-US MUI not present on this runner, skipping'; exit 0 }
+          $out = Join-Path $env:RUNNER_TEMP 'cloud-menu-zh.mui'
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\cloud-menu-zh.ps1 -GenerateOnly -OutputPath $out
+          if (-not (Test-Path $out)) { throw 'MUI not generated' }
+          if ((Get-Item $out).Length -ne (Get-Item $en).Length) { throw 'generated MUI size differs from source' }
+          Write-Host "generated MUI OK: $((Get-Item $out).Length) bytes"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: owncloud-zh-installer
+          path: dist/*.exe
+          if-no-files-found: error
